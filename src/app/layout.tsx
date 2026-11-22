@@ -41,6 +41,10 @@ export default function RootLayout({
               textDecoration: 'none',
               color: '#6b7280',
             }}>View Items</Link>
+            <Link href="/matches" style={{
+              textDecoration: 'none',
+              color: '#6b7280',
+            }}>Matches</Link>
           </div>
         </nav>
         <div style={{ flex: 1 }}>

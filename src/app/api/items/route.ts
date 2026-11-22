@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { extractItemDetails } from '@/lib/ai/extractItemDetails';
+import { findAndSaveMatchesForItem } from '@/lib/matching/matchingEngine';
 import type { ItemType, ExtractedAttributes } from '@/lib/ai/extractItemDetails';
 
 // Type definitions
@@ -13,6 +14,7 @@ export async function GET(request: NextRequest) {
     const type = searchParams.get('type');
     const status = searchParams.get('status');
     const userId = searchParams.get('userId');
+    const matchStatus = searchParams.get('matchStatus');
     const limit = parseInt(searchParams.get('limit') || '50');
 
     const where: {
@@ -129,10 +131,24 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    // Run matching engine (non-blocking)
+    let matchesFound = 0;
+    let newMatches = [];
+
+    try {
+      const matchResult = await findAndSaveMatchesForItem(item.id);
+      matchesFound = matchResult.newMatches.length;
+      newMatches = matchResult.newMatches;
+    } catch (matchError) {
+      console.warn('Matching engine error (non-blocking):', matchError);
+    }
+
     return NextResponse.json({
       success: true,
       data: item,
-      extraction: extractionResult.extractedAttributes
+      extraction: extractionResult.extractedAttributes,
+      matchesFound,
+      matches: newMatches
     }, { status: 201 });
   } catch (error: any) {
     console.error('Failed to create item:', error);
