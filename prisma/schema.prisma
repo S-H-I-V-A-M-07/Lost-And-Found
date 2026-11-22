@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// User model
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  phone     String?
+  createdAt DateTime @default(now())
+
+  // Relations
+  items       Item[]
+  notifications Notification[]
+
+  @@index([email])
+  @@map("users")
+}
+
+// Item model (both lost and found items)
+model Item {
+  id                  String   @id @default(cuid())
+  userId              String
+  type                String   // LOST | FOUND
+  title               String
+  description         String
+  extractedAttributes String?  @default("{}")
+  imageUrl            String?
+  imageEmbedding      Bytes?
+  visualSummary       String?
+  textEmbedding       Bytes?
+  locationName        String
+  latitude            Float?
+  longitude           Float?
+  incidentTime        DateTime
+  status              String   @default("OPEN") // OPEN | MATCHED | CLAIMED | CLOSED
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  // Relations
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lostMatches  Match[]   @relation("LostItemMatches")
+  foundMatches Match[]   @relation("FoundItemMatches")
+
+  // Indexes
+  @@index([userId])
+  @@index([type])
+  @@index([status])
+  @@index([locationName])
+  @@index([incidentTime])
+  @@index([latitude, longitude])
+  @@map("items")
+}
+
+// Match model (links lost and found items)
+model Match {
+  id               String     @id @default(cuid())
+  lostItemId       String
+  foundItemId      String
+  imageScore       Float      @default(0)
+  descriptionScore Float      @default(0)
+  locationScore    Float      @default(0)
+  totalScore       Float      @default(0)
+  matchReason      String
+  status           String     @default("PENDING_REVIEW") // PENDING_REVIEW | CONFIRMED_BY_OWNER | REJECTED
+  createdAt        DateTime   @default(now())
+
+  // Relations
+  lostItem  Item @relation("LostItemMatches", fields: [lostItemId], references: [id], onDelete: Cascade)
+  foundItem Item @relation("FoundItemMatches", fields: [foundItemId], references: [id], onDelete: Cascade)
+  notifications Notification[]
+
+  // Indexes
+  @@index([lostItemId])
+  @@index([foundItemId])
+  @@index([status])
+  @@index([totalScore])
+  @@unique([lostItemId, foundItemId])
+  @@map("matches")
+}
+
+// Notification model
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  matchId   String?
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  channel   String   @default("IN_APP") // IN_APP | EMAIL
+  createdAt DateTime @default(now())
+
+  // Relations
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  match Match? @relation(fields: [matchId], references: [id], onDelete: SetNull)
+
+  // Indexes
+  @@index([userId])
+  @@index([matchId])
+  @@index([isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
