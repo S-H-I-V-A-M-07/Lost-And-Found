@@ -1,19 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
+import { extractItemDetails } from '@/lib/ai/extractItemDetails';
+import type { ItemType, ExtractedAttributes } from '@/lib/ai/extractItemDetails';
 
 // Type definitions
-type ItemType = 'LOST' | 'FOUND';
 type ItemStatus = 'OPEN' | 'MATCHED' | 'CLAIMED' | 'CLOSED';
-
-interface ExtractedAttributes {
-  category: string;
-  subcategory?: string;
-  brand?: string;
-  model?: string;
-  color?: string;
-  uniqueMarks?: string;
-  size?: string;
-}
 
 // GET /api/items - List all items with optional filters
 export async function GET(request: NextRequest) {
@@ -25,13 +16,13 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '50');
 
     const where: {
-      type?: ItemType;
-      status?: ItemStatus;
+      type?: string;
+      status?: string;
       userId?: string;
     } = {};
 
-    if (type) where.type = type as ItemType;
-    if (status) where.status = status as ItemStatus;
+    if (type) where.type = type;
+    if (status) where.status = status;
     if (userId) where.userId = userId;
 
     const items = await prisma.item.findMany({
@@ -73,7 +64,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST /api/items - Create a new item
+// POST /api/items - Create a new item with AI extraction
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -82,7 +73,6 @@ export async function POST(request: NextRequest) {
       type,
       title,
       description,
-      extractedAttributes,
       imageUrl,
       locationName,
       latitude,
@@ -120,22 +110,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Extract attributes using AI (with fallback)
+    const extractionResult = await extractItemDetails(title, description, type as ItemType);
+
     const item = await prisma.item.create({
       data: {
         userId,
-        type,
+        type: type as ItemType,
         title,
         description,
-        extractedAttributes: extractedAttributes ? JSON.stringify(extractedAttributes) : undefined,
+        extractedAttributes: JSON.stringify(extractionResult.extractedAttributes),
+        visualSummary: extractionResult.visualSummary,
         imageUrl,
         locationName,
-        latitude,
-        longitude,
+        latitude: latitude ? parseFloat(latitude) : undefined,
+        longitude: longitude ? parseFloat(longitude) : undefined,
         incidentTime: new Date(incidentTime),
       },
     });
 
-    return NextResponse.json({ success: true, data: item }, { status: 201 });
+    return NextResponse.json({
+      success: true,
+      data: item,
+      extraction: extractionResult.extractedAttributes
+    }, { status: 201 });
   } catch (error: any) {
     console.error('Failed to create item:', error);
 
