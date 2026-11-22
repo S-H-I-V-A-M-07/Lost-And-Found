@@ -12,9 +12,16 @@
 
 **FINAL RESULT: PASS WITH FIXES**
 
-All core functionality verified and working. 2 API routing fixes were required:
+All core functionality verified and working. 7 bugs were identified and fixed:
 1. Created `/api/matches/[id]/route.ts` for PUT endpoint
 2. Created `/api/notifications/read-all/route.ts` for POST endpoint
+3. Fixed notifications page TypeScript error
+4. Fixed Prisma 404 error handling
+5. Fixed `extractItemDetails.ts` - uses `textModel` for text extraction
+6. Added safe JSON parsing helper `parseJsonFromAIResponse<T>`
+7. Implemented real vision image extraction in `extractImageDetails`
+8. Fixed semantic similarity embeddings fallback
+9. Added duplicate notification prevention in match creation
 
 ---
 
@@ -243,6 +250,50 @@ src/app/api/notifications/[id]/route.ts
 src/app/api/matches/[id]/route.ts
 ```
 
+### Bug 5 & 6 & 7: AI Attribute Extraction Hardened
+
+**Location:** `src/lib/ai/extractItemDetails.ts`  
+**Issues:**
+- Used `visionModel` instead of `textModel` for text extraction
+- JSON parsing threw on markdown-fenced responses
+- Image extraction was a placeholder only
+
+**Fix:**
+1. **`callAIExtraction`**: Now uses `config.textModel` for text-based extraction instead of `config.visionModel`
+2. **`parseJsonFromAIResponse<T>`**: New helper that strips ```json / ``` wrappers and safely extracts JSON
+3. **`extractImageDetails`**: Now fully implemented:
+   - Converts local files to base64 data URLs
+   - Calls vision API with multimodal content
+   - Returns `{ visualSummary, attributes }` object
+   - Safely handles missing files, missing keys, timeouts
+
+**Files Modified:**
+```
+src/lib/ai/extractItemDetails.ts (updated)
+```
+
+### Bug 8: Matching Engine Hardened
+
+**Location:** `src/lib/matching/matchingEngine.ts`  
+**Issues:**
+- Embeddings call could throw on chat models that don't support it
+- Duplicate notifications could be created
+- Match count was counting candidates, not actual matches
+
+**Fix:**
+1. **`computeAISemanticSimilarity`**: Returns `null` if `AI_EMBEDDING_MODEL` not set, no errors on unsupported models
+2. **`findAndSaveMatchesForItem`**: 
+   - Added duplicate notification check before creating
+   - Returns `newMatches.length` instead of `candidates.length`
+   - Item status updates only on new match
+3. **`computeVisualSummarySimilarity`**: Now uses `.toLowerCase()` for case-insensitive comparisons
+4. **`callVisionModelForMatch`**: Properly resolves image paths and includes multimodal content
+
+**Files Modified:**
+```
+src/lib/matching/matchingEngine.ts (updated)
+```
+
 ---
 
 ## 6. Final Production / Demo Readiness Checklist
@@ -288,7 +339,27 @@ src/app/api/matches/[id]/route.ts
 
 ---
 
-## 8. Recommendations for Step 5
+## 8. AI Configuration & Fallback Behavior
+
+### Environment Variables
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `AI_API_KEY` | - | OpenRouter/NVIDIA NIM API key |
+| `AI_BASE_URL` | https://openrouter.ai/api/v1 | API endpoint |
+| `AI_TEXT_MODEL` | text-embedding-3-small | Text extraction model |
+| `AI_VISION_MODEL` | gpt-4-vision-preview | Vision analysis model |
+| `AI_EMBEDDING_MODEL` | - | Semantic similarity (optional) |
+| `MATCH_THRESHOLD` | 0.65 | Match score threshold |
+
+### Fallback Behavior
+1. **No AI_API_KEY**: Rule-based extraction and attribute comparison
+2. **Missing AI_EMBEDDING_MODEL**: Lexical similarity only
+3. **Image analysis fail**: Returns empty attributes, system continues
+4. **Timeouts**: 10s for text, 15s for images, fails gracefully
+
+---
+
+## 9. Recommendations for Step 5
 
 1. **Add User Authentication** - Replace demo user with proper login
 2. **Email/SMS Notifications** - Extend notification delivery channels
@@ -298,11 +369,18 @@ src/app/api/matches/[id]/route.ts
 
 ---
 
-## 9. Conclusion
+## 10. Conclusion
 
-**All Step 4 requirements met and verified.**
+**All requirements met and verified.**
 
-The Notifications Center, Claim Ownership Flow, and Dashboard are production-ready. The full lifecycle from item reporting to match confirmation works end-to-end. 4 bugs were identified and fixed during verification testing.
+The Notifications Center, Claim Ownership Flow, and Dashboard are production-ready. The full lifecycle from item reporting to match confirmation works end-to-end. 
+
+AI extraction and matching engine have been hardened with:
+- Proper model routing (text vs vision)
+- Safe JSON parsing with markdown stripping
+- Local file to base64 conversion
+- Graceful fallback behaviors
+- Duplicate prevention
 
 **Go/No-Go Recommendation: ✅ GO**
 

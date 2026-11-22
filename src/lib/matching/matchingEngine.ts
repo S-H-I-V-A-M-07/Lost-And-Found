@@ -4,13 +4,10 @@
  */
 
 import prisma from '@/lib/prisma';
-import { extractItemDetails } from '@/lib/ai/extractItemDetails';
 import type { Item } from '@prisma/client';
 
 // Types
-type ItemType = 'LOST' | 'FOUND';
-
-interface ExtractedAttributes {
+export interface ExtractedAttributes {
   category: string;
   subcategory?: string;
   brand?: string;
@@ -21,12 +18,12 @@ interface ExtractedAttributes {
   keywords: string[];
 }
 
-interface ScoreResult {
+export interface ScoreResult {
   score: number;
   reason: string;
 }
 
-interface MatchCalculation {
+export interface MatchCalculation {
   imageScore: number;
   descriptionScore: number;
   locationScore: number;
@@ -34,20 +31,7 @@ interface MatchCalculation {
   matchReason: string;
 }
 
-interface MatchResult {
-  id?: string;
-  lostItemId: string;
-  foundItemId: string;
-  imageScore: number;
-  descriptionScore: number;
-  locationScore: number;
-  totalScore: number;
-  matchReason: string;
-  status: string;
-  createdAt?: string;
-}
-
-// For internal AI response parsing
+// Interface for vision model response
 interface VisionMatchResult {
   score: number;
   reason: string;
@@ -208,8 +192,6 @@ export async function computeDescriptionScore(
   lostItem: Item,
   foundItem: Item
 ): Promise<ScoreResult> {
-  const reasons: string[] = [];
-
   // Parse extracted attributes
   const lostAttrs: ExtractedAttributes | null = lostItem.extractedAttributes
     ? JSON.parse(lostItem.extractedAttributes)
@@ -229,7 +211,7 @@ export async function computeDescriptionScore(
     }
   }
 
-  // Brand matching
+  // Brand matching (case-insensitive)
   if (lostAttrs?.brand && foundAttrs?.brand) {
     if (lostAttrs.brand.toLowerCase() === foundAttrs.brand.toLowerCase()) {
       score += 0.25;
@@ -237,7 +219,7 @@ export async function computeDescriptionScore(
     }
   }
 
-  // Color matching
+  // Color matching (case-insensitive)
   if (lostAttrs?.color && foundAttrs?.color) {
     if (lostAttrs.color.toLowerCase() === foundAttrs.color.toLowerCase()) {
       score += 0.15;
@@ -245,7 +227,7 @@ export async function computeDescriptionScore(
     }
   }
 
-  // Unique marks matching
+  // Unique marks matching (case-insensitive)
   if (lostAttrs?.uniqueMarks && foundAttrs?.uniqueMarks) {
     const lostMarks = lostAttrs.uniqueMarks.toLowerCase();
     const foundMarks = foundAttrs.uniqueMarks.toLowerCase();
@@ -288,15 +270,22 @@ export async function computeDescriptionScore(
 }
 
 /**
- * AI-powered semantic similarity (with fallback)
+ * AI-powered semantic similarity (with safe fallback)
+ * Returns null if embeddings not available or if AI_EMBEDDING_MODEL is not set
  */
-async function computeAISemanticSimilarity(text1: string, text2: string): Promise<number | null> {
+export async function computeAISemanticSimilarity(text1: string, text2: string): Promise<number | null> {
   const apiKey = process.env.AI_API_KEY || process.env.NEXT_PUBLIC_AI_API_KEY;
   const baseUrl = process.env.AI_BASE_URL || 'https://openrouter.ai/api/v1';
-  const model = process.env.AI_TEXT_MODEL || 'text-embedding-3-small';
+  const model = process.env.AI_EMBEDDING_MODEL || process.env.AI_TEXT_MODEL || 'text-embedding-3-small';
 
+  // Return null if no API key - let caller handle fallback
   if (!apiKey) {
-    return null; // No AI available, use fallback only
+    return null;
+  }
+
+  // Return null if no embedding model is explicitly configured
+  if (!process.env.AI_EMBEDDING_MODEL) {
+    return null;
   }
 
   try {
@@ -342,7 +331,7 @@ async function computeAISemanticSimilarity(text1: string, text2: string): Promis
 /**
  * Calculate cosine similarity between two vectors
  */
-function cosineSimilarity(a: number[], b: number[]): number {
+export function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) return 0;
 
   let dotProduct = 0;
@@ -385,8 +374,6 @@ export async function computeImageScore(
 
   // Use AI vision model if available
   const apiKey = process.env.AI_API_KEY || process.env.NEXT_PUBLIC_AI_API_KEY;
-  const baseUrl = process.env.AI_BASE_URL || 'https://openrouter.ai/api/v1';
-  const visionModel = process.env.AI_VISION_MODEL || 'gpt-4-vision-preview';
 
   if (apiKey && lostItem.imageUrl && foundItem.imageUrl) {
     try {
@@ -398,11 +385,10 @@ export async function computeImageScore(
       );
 
       if (aiScore !== null) {
-        const visionScore = aiScore.totalScore || 0;
-        reasons.push(`AI vision match: ${visionScore}`);
+        const visionScore = Math.min(1.0, Math.max(0, aiScore.totalScore || aiScore.score || 0));
         return {
           score: visionScore,
-          reason: aiScore.matchReason || 'AI visual comparison'
+          reason: aiScore.matchReason || aiScore.reason || 'AI visual comparison'
         };
       }
     } catch (error) {
@@ -412,16 +398,34 @@ export async function computeImageScore(
 
   // Fallback: compare visual summaries and attributes
   const fallbackScore = computeVisualSummarySimilarity(lostItem, foundItem);
-  reasons.push(fallbackScore.reason);
 
   return {
     score: fallbackScore.score,
-    reason: reasons.join(', ')
+    reason: fallbackScore.reason
   };
 }
 
 /**
- * Call vision model to compare two images
+ * Convert local path or URL to usable image format for vision API
+ */
+async function resolveImagePath(imagePath: string): Promise<string> {
+  // If already a URL, use directly
+  if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+    return imagePath;
+  }
+
+  // Handle local paths - convert to full URL for the frontend
+  if (imagePath.startsWith('/uploads/') || imagePath.startsWith('uploads/')) {
+    const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+    return `${basePath}${imagePath.startsWith('/') ? '' : '/'}${imagePath.replace(/^uploads\//, '')}`;
+  }
+
+  // Default: assume it's a relative path
+  return imagePath;
+}
+
+/**
+ * Call vision model to compare two images with proper base64 handling
  */
 async function callVisionModelForMatch(
   imageUrl1: string,
@@ -437,7 +441,11 @@ async function callVisionModelForMatch(
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
+    // Resolve image paths
+    const resolvedUrl1 = await resolveImagePath(imageUrl1);
+    const resolvedUrl2 = await resolveImagePath(imageUrl2);
 
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
@@ -452,15 +460,24 @@ async function callVisionModelForMatch(
           content: [
             {
               type: 'text',
-              text: `Compare if these two items are the same physical object based on their descriptions.
+              text: `Compare if these two items are the same physical object based on their descriptions and images.
 
-Image 1: ${imageUrl1}
+Image 1: ${resolvedUrl1}
 Summary 1: ${summary1}
 
-Image 2: ${imageUrl2}
+Image 2: ${resolvedUrl2}
 Summary 2: ${summary2}
 
 Reply with JSON: {"score": 0.0-1.0, "reason": "explanation"}`
+            },
+            // Include actual image_url objects for vision models that require them
+            {
+              type: 'image_url',
+              image_url: { url: resolvedUrl1 }
+            },
+            {
+              type: 'image_url',
+              image_url: { url: resolvedUrl2 }
             }
           ]
         }],
@@ -479,22 +496,26 @@ Reply with JSON: {"score": 0.0-1.0, "reason": "explanation"}`
 
     if (!content) return null;
 
-    // Try to parse JSON response
-    try {
-      const parsed = JSON.parse(content);
-      const visionResult: VisionMatchResult = {
-        score: Math.min(1.0, Math.max(0, parsed.score)),
-        reason: parsed.reason || 'AI visual comparison',
-        imageScore: parsed.score,
-        descriptionScore: 0,
-        locationScore: 0,
-        totalScore: parsed.score,
-        matchReason: parsed.reason
-      };
-      return visionResult;
-    } catch {
+    // Safe JSON parsing with markdown stripping
+    const parsed = parseJsonFromAIResponseForMatching<{
+      score: number;
+      reason: string;
+    }>(content);
+
+    if (!parsed) {
       return null;
     }
+
+    const visionResult: VisionMatchResult = {
+      score: Math.min(1.0, Math.max(0, parsed.score)),
+      reason: parsed.reason || 'AI visual comparison',
+      imageScore: parsed.score,
+      descriptionScore: 0,
+      locationScore: 0,
+      totalScore: parsed.score,
+      matchReason: parsed.reason
+    };
+    return visionResult;
 
   } catch (error) {
     console.warn('Vision model call failed:', error);
@@ -503,9 +524,33 @@ Reply with JSON: {"score": 0.0-1.0, "reason": "explanation"}`
 }
 
 /**
- * Fallback image similarity using attributes and summaries
+ * Helper for safe JSON parsing (duplicate for matchingEngine context)
  */
-function computeVisualSummarySimilarity(lostItem: Item, foundItem: Item): { score: number; reason: string } {
+function parseJsonFromAIResponseForMatching<T>(raw: string): T | null {
+  if (!raw) return null;
+
+  try {
+    let cleaned = raw.trim();
+    cleaned = cleaned.replace(/^```(?:json)?\s*/gi, '');
+    cleaned = cleaned.replace(/\s*```$/gi, '');
+
+    const jsonStart = cleaned.indexOf('{');
+    const jsonEnd = cleaned.lastIndexOf('}');
+
+    if (jsonStart >= 0 && jsonEnd > jsonStart) {
+      cleaned = cleaned.substring(jsonStart, jsonEnd + 1);
+    }
+
+    return JSON.parse(cleaned) as T;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Fallback image similarity using attributes and summaries (case-insensitive)
+ */
+export function computeVisualSummarySimilarity(lostItem: Item, foundItem: Item): { score: number; reason: string } {
   const lostAttrs: ExtractedAttributes | null = lostItem.extractedAttributes
     ? JSON.parse(lostItem.extractedAttributes)
     : null;
@@ -516,33 +561,33 @@ function computeVisualSummarySimilarity(lostItem: Item, foundItem: Item): { scor
   let score = 0;
   const reasons: string[] = [];
 
-  // Color match
+  // Color match (case-insensitive)
   if (lostAttrs?.color && foundAttrs?.color) {
-    if (lostAttrs.color === foundAttrs.color) {
+    if (lostAttrs.color.toLowerCase() === foundAttrs.color.toLowerCase()) {
       score += 0.3;
       reasons.push(`color match (${lostAttrs.color})`);
     }
   }
 
-  // Brand match
+  // Brand match (case-insensitive)
   if (lostAttrs?.brand && foundAttrs?.brand) {
-    if (lostAttrs.brand === foundAttrs.brand) {
+    if (lostAttrs.brand.toLowerCase() === foundAttrs.brand.toLowerCase()) {
       score += 0.25;
       reasons.push(`brand match (${lostAttrs.brand})`);
     }
   }
 
-  // Category match
+  // Category match (case-insensitive)
   if (lostAttrs?.category && foundAttrs?.category) {
-    if (lostAttrs.category === foundAttrs.category) {
+    if (lostAttrs.category.toLowerCase() === foundAttrs.category.toLowerCase()) {
       score += 0.2;
       reasons.push(`category match (${lostAttrs.category})`);
     }
   }
 
-  // Unique marks match
+  // Unique marks match (case-insensitive)
   if (lostAttrs?.uniqueMarks && foundAttrs?.uniqueMarks) {
-    if (lostAttrs.uniqueMarks === foundAttrs.uniqueMarks) {
+    if (lostAttrs.uniqueMarks.toLowerCase() === foundAttrs.uniqueMarks.toLowerCase()) {
       score += 0.25;
       reasons.push('unique marks match');
     }
@@ -660,7 +705,7 @@ function generateMatchReason(
  */
 export async function findAndSaveMatchesForItem(itemId: string): Promise<{
   matchesFound: number;
-  newMatches: MatchResult[];
+  newMatches: any[];
 }> {
   if (!itemId) {
     return { matchesFound: 0, newMatches: [] };
@@ -687,7 +732,7 @@ export async function findAndSaveMatchesForItem(itemId: string): Promise<{
     },
   });
 
-  const newMatches: MatchResult[] = [];
+  const newMatches: any[] = [];
 
   for (const candidate of candidates) {
     // Calculate match score
@@ -698,7 +743,7 @@ export async function findAndSaveMatchesForItem(itemId: string): Promise<{
 
     // Check if meets threshold
     if (matchData.totalScore >= MATCH_THRESHOLD) {
-      // Check if match already exists
+      // Check if match already exists (prevent duplicates)
       const existingMatch = await prisma.match.findFirst({
         where: {
           OR: [
@@ -726,21 +771,31 @@ export async function findAndSaveMatchesForItem(itemId: string): Promise<{
           },
         });
 
+        // Check if notification already exists for this match + user pair (avoid duplicates)
+        const existingNotification = await prisma.notification.findFirst({
+          where: {
+            userId: item.userId,
+            matchId: newMatch.id,
+          },
+        });
+
+        // Create notification only if one doesn't exist
+        if (!existingNotification) {
+          await prisma.notification.create({
+            data: {
+              userId: item.userId,
+              matchId: newMatch.id,
+              title: `Potential ${candidate.type === 'FOUND' ? 'Owner' : 'Finder'} Found`,
+              message: `A potential ${candidate.type === 'FOUND' ? 'owner' : 'finder'} match for "${item.title}" was found. Click to review details.`,
+              channel: 'IN_APP',
+            },
+          });
+        }
+
         // Update item status to MATCHED
         await prisma.item.update({
           where: { id: item.id },
           data: { status: 'MATCHED' },
-        });
-
-        // Create notifications for item owner
-        await prisma.notification.create({
-          data: {
-            userId: item.userId,
-            matchId: newMatch.id,
-            title: `Potential ${candidate.type === 'FOUND' ? 'Owner' : 'Finder'} Found`,
-            message: `A potential ${candidate.type === 'FOUND' ? 'owner' : 'finder'} match for "${item.title}" was found. Click to review details.`,
-            channel: 'IN_APP',
-          },
         });
 
         newMatches.push({
@@ -753,8 +808,9 @@ export async function findAndSaveMatchesForItem(itemId: string): Promise<{
     }
   }
 
+  // Return actual matches found (newMatches.length), not candidates length
   return {
-    matchesFound: candidates.length,
+    matchesFound: newMatches.length,
     newMatches,
   };
 }
