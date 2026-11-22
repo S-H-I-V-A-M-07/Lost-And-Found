@@ -1,10 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
-import {
-  calculateMatch,
-  findAndSaveMatchesForItem,
-  runBatchMatching
-} from '@/lib/matching/matchingEngine';
+import { findAndSaveMatchesForItem, runBatchMatching } from '@/lib/matching/matchingEngine';
 
 // GET /api/matches - List matches with filtering
 export async function GET(request: NextRequest) {
@@ -100,20 +96,7 @@ export async function POST(request: NextRequest) {
       result = await findAndSaveMatchesForItem(itemId);
     } else {
       // Run batch matching for all open items
-      result = {
-        matchesFound: 0,
-        newMatches: [],
-      };
       const batchResult = await runBatchMatching();
-
-      // Fetch the new matches for response
-      const newMatchIds = batchResult.created > 0
-        ? await prisma.match.findMany({
-            where: { status: 'PENDING_REVIEW' },
-            orderBy: { createdAt: 'desc' },
-            take: batchResult.created,
-          })
-        : [];
 
       result = {
         matchesFound: batchResult.evaluated,
@@ -130,61 +113,6 @@ export async function POST(request: NextRequest) {
     console.error('Failed to run matching:', error);
     return NextResponse.json(
       { success: false, error: 'Failed to run matching' },
-      { status: 500 }
-    );
-  }
-}
-
-// PUT /api/matches/:id - Update match status
-export async function PUT(request: NextRequest) {
-  try {
-    const matchId = request.nextUrl.pathname.split('/').pop();
-
-    if (!matchId) {
-      return NextResponse.json(
-        { success: false, error: 'Match ID required' },
-        { status: 400 }
-      );
-    }
-
-    const body = await request.json();
-    const { status } = body;
-
-    const validStatuses = ['PENDING_REVIEW', 'CONFIRMED_BY_OWNER', 'REJECTED'];
-
-    if (!validStatuses.includes(status)) {
-      return NextResponse.json(
-        { success: false, error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` },
-        { status: 400 }
-      );
-    }
-
-    const match = await prisma.match.update({
-      where: { id: matchId },
-      data: { status },
-      include: {
-        lostItem: true,
-        foundItem: true,
-      },
-    });
-
-    // If confirmed, update item statuses
-    if (status === 'CONFIRMED_BY_OWNER') {
-      await prisma.item.update({
-        where: { id: match.lostItemId },
-        data: { status: 'CLAIMED' },
-      });
-      await prisma.item.update({
-        where: { id: match.foundItemId },
-        data: { status: 'CLAIMED' },
-      });
-    }
-
-    return NextResponse.json({ success: true, data: match });
-  } catch (error) {
-    console.error('Failed to update match:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to update match' },
       { status: 500 }
     );
   }

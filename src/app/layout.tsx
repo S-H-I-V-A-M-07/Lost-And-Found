@@ -45,6 +45,10 @@ export default function RootLayout({
               textDecoration: 'none',
               color: '#6b7280',
             }}>Matches</Link>
+            <Link href="/notifications" style={{
+              textDecoration: 'none',
+              color: '#6b7280',
+            }}>Notifications</Link>
           </div>
         </nav>
         <div style={{ flex: 1 }}>
